@@ -1,6 +1,4 @@
 <?php
-// app/Http/Controllers/Api/CartItemController.php
-
 namespace App\Http\Controllers\Api;
 
 use App\Models\CartItem;
@@ -12,13 +10,9 @@ class CartItemController extends BaseController
 {
     public function index(Request $request)
     {
-        $query = CartItem::with(['user', 'product']);
-
-        if ($request->has('user_id')) {
-            $query->where('user_id', $request->user_id);
-        }
-
-        $items = $query->paginate($request->get('per_page', 15));
+        $items = CartItem::with(['product'])
+            ->where('user_id', auth()->id())
+            ->paginate($request->get('per_page', 50));
 
         return $this->sendPaginated(
             $items,
@@ -30,36 +24,43 @@ class CartItemController extends BaseController
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'user_id' => 'required|exists:users,id',
-            'product_id' => 'required|exists:products,id',
-            'quantity' => 'required|integer|min:1',
+            'product_id'        => 'required|exists:products,id',
+            'quantity'          => 'sometimes|integer|min:1',
             'rental_start_date' => 'nullable|date',
-            'rental_end_date' => 'nullable|date|after:rental_start_date',
-            'item_type' => 'required|in:purchase,rental',
+            'rental_end_date'   => 'nullable|date|after:rental_start_date',
         ]);
 
         if ($validator->fails()) {
             return $this->sendError('Validation Error', $validator->errors(), 422);
         }
 
-        // Check if item already in cart
-        $existing = CartItem::where('user_id', $request->user_id)
+        $userId   = auth()->id();
+        $itemType = ($request->rental_start_date || $request->type === 'rental') ? 'rental' : 'purchase';
+
+        $existing = CartItem::where('user_id', $userId)
             ->where('product_id', $request->product_id)
-            ->where('item_type', $request->item_type)
+            ->where('item_type', $itemType)
             ->first();
 
         if ($existing) {
-            $existing->increment('quantity', $request->quantity);
+            $existing->increment('quantity', $request->quantity ?? 1);
             return $this->sendResponse(
-                new CartItemResource($existing),
-                'Cart item updated successfully'
+                new CartItemResource($existing->load('product')),
+                'Cart item quantity updated'
             );
         }
 
-        $item = CartItem::create($request->all());
+        $item = CartItem::create([
+            'user_id'           => $userId,
+            'product_id'        => $request->product_id,
+            'quantity'          => $request->quantity ?? 1,
+            'item_type'         => $itemType,
+            'rental_start_date' => $request->rental_start_date,
+            'rental_end_date'   => $request->rental_end_date,
+        ]);
 
         return $this->sendResponse(
-            new CartItemResource($item),
+            new CartItemResource($item->load('product')),
             'Item added to cart successfully',
             201
         );
@@ -67,72 +68,55 @@ class CartItemController extends BaseController
 
     public function show($id)
     {
-        $item = CartItem::with(['user', 'product'])->find($id);
+        $item = CartItem::with(['product'])
+            ->where('user_id', auth()->id())
+            ->find($id);
 
         if (!$item) {
-            return $this->sendError('Cart item not found');
+            return $this->sendError('Cart item not found', [], 404);
         }
 
-        return $this->sendResponse(
-            new CartItemResource($item),
-            'Cart item retrieved successfully'
-        );
+        return $this->sendResponse(new CartItemResource($item), 'Cart item retrieved successfully');
     }
 
     public function update(Request $request, $id)
     {
-        $item = CartItem::find($id);
+        $item = CartItem::where('user_id', auth()->id())->find($id);
 
         if (!$item) {
-            return $this->sendError('Cart item not found');
+            return $this->sendError('Cart item not found', [], 404);
         }
 
         $validator = Validator::make($request->all(), [
-            'quantity' => 'sometimes|integer|min:1',
+            'quantity'          => 'sometimes|integer|min:1',
             'rental_start_date' => 'nullable|date',
-            'rental_end_date' => 'nullable|date|after:rental_start_date',
+            'rental_end_date'   => 'nullable|date|after:rental_start_date',
         ]);
 
         if ($validator->fails()) {
             return $this->sendError('Validation Error', $validator->errors(), 422);
         }
 
-        $item->update($request->all());
+        $item->update($request->only(['quantity', 'rental_start_date', 'rental_end_date']));
 
-        return $this->sendResponse(
-            new CartItemResource($item),
-            'Cart item updated successfully'
-        );
+        return $this->sendResponse(new CartItemResource($item), 'Cart item updated successfully');
     }
 
     public function destroy($id)
     {
-        $item = CartItem::find($id);
+        $item = CartItem::where('user_id', auth()->id())->find($id);
 
         if (!$item) {
-            return $this->sendError('Cart item not found');
+            return $this->sendError('Cart item not found', [], 404);
         }
 
         $item->delete();
-
         return $this->sendResponse(null, 'Item removed from cart successfully');
     }
 
-    /**
-     * Clear user's cart
-     */
-    public function clear($user_id)  
+    public function clear($user_id)
     {
-       
-        $user = \App\Models\User::find($user_id);
-        
-        if (!$user) {
-            return $this->sendError('User not found', [], 404);
-        }
-        
-        
-        \App\Models\CartItem::where('user_id', $user_id)->delete();
-        
+        CartItem::where('user_id', auth()->id())->delete();
         return $this->sendResponse(null, 'Cart cleared successfully');
     }
 }

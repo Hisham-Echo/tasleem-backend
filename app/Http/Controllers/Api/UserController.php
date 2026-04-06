@@ -62,7 +62,7 @@ class UserController extends BaseController
             'address' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:100',
             'post_code' => 'nullable|string|max:20',
-            'role' => 'sometimes|in:admin,user',
+            'role' => 'sometimes|in:admin,seller,user',
             'status' => 'sometimes|in:1,0',
         ]);
 
@@ -125,7 +125,7 @@ class UserController extends BaseController
             'address' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:100',
             'post_code' => 'nullable|string|max:20',
-            'role' => 'sometimes|in:admin,user',
+            'role' => 'sometimes|in:admin,seller,user',
             'status' => 'sometimes|in:1,0',
         ]);
 

@@ -1,6 +1,4 @@
 <?php
-// app/Http/Controllers/Api/OrderController.php
-
 namespace App\Http\Controllers\Api;
 
 use App\Models\Order;
@@ -12,9 +10,12 @@ class OrderController extends BaseController
 {
     public function index(Request $request)
     {
-        $query = Order::with(['user', 'product', 'payment']);
+        $query = Order::with(['product']);
 
-        if ($request->has('user_id')) {
+        // Admins can see all orders; regular users see only theirs
+        if (!auth()->user()?->isAdmin()) {
+            $query->where('user_id', auth()->id());
+        } elseif ($request->has('user_id')) {
             $query->where('user_id', $request->user_id);
         }
 
@@ -22,7 +23,7 @@ class OrderController extends BaseController
             $query->where('status', $request->status);
         }
 
-        $orders = $query->paginate($request->get('per_page', 15));
+        $orders = $query->latest()->paginate($request->get('per_page', 15));
 
         return $this->sendPaginated(
             $orders,
@@ -34,9 +35,8 @@ class OrderController extends BaseController
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'user_id' => 'required|exists:users,id',
             'product_id' => 'required|exists:products,id',
-            'quantity' => 'required|integer|min:1',
+            'quantity'   => 'required|integer|min:1',
             'unit_price' => 'required|numeric|min:0',
         ]);
 
@@ -45,21 +45,19 @@ class OrderController extends BaseController
         }
 
         $order = Order::create([
-            'user_id' => $request->user_id,
-            'product_id' => $request->product_id,
-            'quantity' => $request->quantity,
-            'unit_price' => $request->unit_price,
+            'user_id'     => auth()->id(),
+            'product_id'  => $request->product_id,
+            'quantity'    => $request->quantity,
+            'unit_price'  => $request->unit_price,
             'total_price' => $request->quantity * $request->unit_price,
-            'status' => 'pending',
+            'status'      => 'pending',
         ]);
 
-        // Update product
-        $product = $order->product;
-        $product->increment('pay_count', $request->quantity);
-        $product->decrement('quantity', $request->quantity);
+        $order->product?->increment('pay_count', $request->quantity);
+        $order->product?->decrement('quantity', $request->quantity);
 
         return $this->sendResponse(
-            new OrderResource($order->load(['user', 'product'])),
+            new OrderResource($order->load('product')),
             'Order created successfully',
             201
         );
@@ -67,16 +65,18 @@ class OrderController extends BaseController
 
     public function show($id)
     {
-        $order = Order::with(['user', 'product', 'payment'])->find($id);
+        $order = Order::with(['product'])->find($id);
 
         if (!$order) {
-            return $this->sendError('Order not found');
+            return $this->sendError('Order not found', [], 404);
         }
 
-        return $this->sendResponse(
-            new OrderResource($order),
-            'Order retrieved successfully'
-        );
+        // Users can only view their own orders
+        if (!auth()->user()?->isAdmin() && $order->user_id !== auth()->id()) {
+            return $this->sendError('Unauthorized', [], 403);
+        }
+
+        return $this->sendResponse(new OrderResource($order), 'Order retrieved successfully');
     }
 
     public function update(Request $request, $id)
@@ -84,33 +84,31 @@ class OrderController extends BaseController
         $order = Order::find($id);
 
         if (!$order) {
-            return $this->sendError('Order not found');
+            return $this->sendError('Order not found', [], 404);
+        }
+
+        if (!auth()->user()?->isAdmin() && $order->user_id !== auth()->id()) {
+            return $this->sendError('Unauthorized', [], 403);
         }
 
         $validator = Validator::make($request->all(), [
-            'status' => 'sometimes|in:pending,confirmed,shipped,delivered,cancelled,returned',
-            'quantity' => 'sometimes|integer|min:1',
+            'status'     => 'sometimes|in:pending,confirmed,shipped,delivered,cancelled,returned',
+            'quantity'   => 'sometimes|integer|min:1',
             'unit_price' => 'sometimes|numeric|min:0',
-            
         ]);
 
         if ($validator->fails()) {
             return $this->sendError('Validation Error', $validator->errors(), 422);
         }
 
-     
         $order->update($request->only(['status', 'quantity', 'unit_price']));
-        
-        
+
         if ($request->has('quantity') || $request->has('unit_price')) {
             $order->total_price = $order->quantity * $order->unit_price;
             $order->save();
         }
 
-        return $this->sendResponse(
-            new OrderResource($order),
-            'Order updated successfully'
-        );
+        return $this->sendResponse(new OrderResource($order), 'Order updated successfully');
     }
 
     public function destroy($id)
@@ -118,15 +116,18 @@ class OrderController extends BaseController
         $order = Order::find($id);
 
         if (!$order) {
-            return $this->sendError('Order not found');
+            return $this->sendError('Order not found', [], 404);
+        }
+
+        if (!auth()->user()?->isAdmin() && $order->user_id !== auth()->id()) {
+            return $this->sendError('Unauthorized', [], 403);
         }
 
         if ($order->status !== 'pending') {
-            return $this->sendError('Cannot delete order that is not pending');
+            return $this->sendError('Cannot delete an order that is not pending');
         }
 
         $order->delete();
-
         return $this->sendResponse(null, 'Order deleted successfully');
     }
 }

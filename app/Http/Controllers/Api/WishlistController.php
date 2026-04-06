@@ -1,49 +1,20 @@
 <?php
-// app/Http/Controllers/Api/WishlistController.php
-
 namespace App\Http\Controllers\Api;
 
-use App\Http\Controllers\Controller;
 use App\Models\Wishlist;
-use App\Models\Product;
 use App\Http\Resources\WishlistResource;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
-use App\Models\Log;
 
 class WishlistController extends BaseController
 {
-    /**
-     * Display a listing of user's wishlist
-     */
     public function index(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'user_id' => 'required|exists:users,id',
-        ]);
-
-        if ($validator->fails()) {
-            return $this->sendError('Validation Error', $validator->errors(), 422);
-        }
+        $userId = auth()->id();
 
         $wishlist = Wishlist::with('product')
-            ->where('user_id', $request->user_id)
+            ->where('user_id', $userId)
             ->paginate($request->get('per_page', 15));
-
-        // تسجيل العرض في logs
-        LogController::addLog(
-            auth()->id() ?? $request->user_id,
-            'VIEW',
-            'view_wishlist',
-            'wishlist',
-            null,
-            null,
-            null,
-            $request->ip(),
-            $request->userAgent(),
-            'success',
-            'User viewed their wishlist'
-        );
 
         return $this->sendPaginated(
             $wishlist,
@@ -52,13 +23,9 @@ class WishlistController extends BaseController
         );
     }
 
-    /**
-     * Add product to wishlist
-     */
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'user_id' => 'required|exists:users,id',
             'product_id' => 'required|exists:products,id',
         ]);
 
@@ -66,8 +33,9 @@ class WishlistController extends BaseController
             return $this->sendError('Validation Error', $validator->errors(), 422);
         }
 
-        // Check if already in wishlist
-        $existing = Wishlist::where('user_id', $request->user_id)
+        $userId = auth()->id();
+
+        $existing = Wishlist::where('user_id', $userId)
             ->where('product_id', $request->product_id)
             ->first();
 
@@ -76,24 +44,9 @@ class WishlistController extends BaseController
         }
 
         $wishlist = Wishlist::create([
-            'user_id' => $request->user_id,
+            'user_id'    => $userId,
             'product_id' => $request->product_id,
         ]);
-
-        
-        LogController::addLog(
-            $request->user_id,
-            'CREATE',
-            'add_to_wishlist',
-            'wishlist',
-            $wishlist->wishlist_id,
-            null,
-            ['product_id' => $request->product_id],
-            $request->ip(),
-            $request->userAgent(),
-            'success',
-            'Product added to wishlist'
-        );
 
         return $this->sendResponse(
             new WishlistResource($wishlist->load('product')),
@@ -102,83 +55,28 @@ class WishlistController extends BaseController
         );
     }
 
-    /**
-     * Remove product from wishlist
-     */
-    public function destroy(Request $request, $id)
+    public function destroy($id)
     {
-        $wishlist = Wishlist::find($id);
+        $wishlist = Wishlist::where('user_id', auth()->id())->find($id);
 
         if (!$wishlist) {
-            return $this->sendError('Wishlist item not found');
+            return $this->sendError('Wishlist item not found', [], 404);
         }
 
-       
-        $oldData = $wishlist->toArray();
-        $userId = $wishlist->user_id;
-        $productId = $wishlist->product_id;
-
         $wishlist->delete();
-
-       
-        LogController::addLog(
-            $userId,
-            'DELETE',
-            'remove_from_wishlist',
-            'wishlist',
-            $id,
-            $oldData,
-            null,
-            $request->ip(),
-            $request->userAgent(),
-            'success',
-            'Product removed from wishlist'
-        );
 
         return $this->sendResponse(null, 'Product removed from wishlist successfully');
     }
 
-    /**
-     * Clear entire wishlist for a user
-     */
-    public function clear(Request $request, $userId)
+    public function clear($userId)
     {
-        $validator = Validator::make(['user_id' => $userId], [
-            'user_id' => 'required|exists:users,id',
-        ]);
-
-        if ($validator->fails()) {
-            return $this->sendError('Validation Error', $validator->errors(), 422);
-        }
-
-        $count = Wishlist::where('user_id', $userId)->count();
-        Wishlist::where('user_id', $userId)->delete();
-
-        
-        LogController::addLog(
-            $userId,
-            'DELETE',
-            'clear_wishlist',
-            'wishlist',
-            null,
-            null,
-            null,
-            $request->ip(),
-            $request->userAgent(),
-            'success',
-            "User cleared their wishlist (removed {$count} items)"
-        );
-
+        Wishlist::where('user_id', auth()->id())->delete();
         return $this->sendResponse(null, 'Wishlist cleared successfully');
     }
 
-    /**
-     * Check if product is in user's wishlist
-     */
     public function check(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'user_id' => 'required|exists:users,id',
             'product_id' => 'required|exists:products,id',
         ]);
 
@@ -186,13 +84,17 @@ class WishlistController extends BaseController
             return $this->sendError('Validation Error', $validator->errors(), 422);
         }
 
-        $exists = Wishlist::where('user_id', $request->user_id)
+        $exists = Wishlist::where('user_id', auth()->id())
             ->where('product_id', $request->product_id)
             ->exists();
 
-        return $this->sendResponse(
-            ['in_wishlist' => $exists],
-            'Check completed successfully'
-        );
+        $item = Wishlist::where('user_id', auth()->id())
+            ->where('product_id', $request->product_id)
+            ->first();
+
+        return $this->sendResponse([
+            'in_wishlist'      => $exists,
+            'wishlist_item_id' => $item?->id ?? $item?->wishlist_id ?? null,
+        ], 'Check completed successfully');
     }
 }

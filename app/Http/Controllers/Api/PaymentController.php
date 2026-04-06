@@ -1,6 +1,4 @@
 <?php
-// app/Http/Controllers/Api/PaymentController.php
-
 namespace App\Http\Controllers\Api;
 
 use App\Models\Payment;
@@ -12,9 +10,11 @@ class PaymentController extends BaseController
 {
     public function index(Request $request)
     {
-        $query = Payment::with(['user', 'order', 'rental']);
+        $query = Payment::with(['order', 'rental']);
 
-        if ($request->has('user_id')) {
+        if (!auth()->user()?->isAdmin()) {
+            $query->where('user_id', auth()->id());
+        } elseif ($request->has('user_id')) {
             $query->where('user_id', $request->user_id);
         }
 
@@ -34,11 +34,10 @@ class PaymentController extends BaseController
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'order_id' => 'nullable|exists:orders,order_id',
-            'rental_id' => 'nullable|exists:rentals,rental_id',
-            'user_id' => 'required|exists:users,id',
-            'amount' => 'required|numeric|min:0',
-            'payment_method' => 'required|in:credit_card,paypal,bank_transfer,cash',
+            'order_id'       => 'nullable|exists:orders,id',
+            'rental_id'      => 'nullable|exists:rentals,id',
+            'amount'         => 'required|numeric|min:0',
+            'payment_method' => 'required|in:credit_card,paypal,bank_transfer,cash,vodafone_cash,instapay',
             'transaction_id' => 'nullable|string|unique:payments',
         ]);
 
@@ -46,31 +45,36 @@ class PaymentController extends BaseController
             return $this->sendError('Validation Error', $validator->errors(), 422);
         }
 
-        if (!$request->order_id && !$request->rental_id) {
-            return $this->sendError('Either order_id or rental_id is required');
-        }
-
-        $payment = Payment::create($request->all());
+        $payment = Payment::create([
+            'user_id'        => auth()->id(),
+            'order_id'       => $request->order_id,
+            'rental_id'      => $request->rental_id,
+            'amount'         => $request->amount,
+            'payment_method' => $request->payment_method,
+            'transaction_id' => $request->transaction_id,
+            'status'         => 'completed',
+        ]);
 
         return $this->sendResponse(
-            new PaymentResource($payment->load(['user', 'order', 'rental'])),
-            'Payment created successfully',
+            new PaymentResource($payment->load(['order', 'rental'])),
+            'Payment recorded successfully',
             201
         );
     }
 
     public function show($id)
     {
-        $payment = Payment::with(['user', 'order', 'rental'])->find($id);
+        $payment = Payment::with(['order', 'rental'])->find($id);
 
         if (!$payment) {
-            return $this->sendError('Payment not found');
+            return $this->sendError('Payment not found', [], 404);
         }
 
-        return $this->sendResponse(
-            new PaymentResource($payment),
-            'Payment retrieved successfully'
-        );
+        if (!auth()->user()?->isAdmin() && $payment->user_id !== auth()->id()) {
+            return $this->sendError('Unauthorized', [], 403);
+        }
+
+        return $this->sendResponse(new PaymentResource($payment), 'Payment retrieved successfully');
     }
 
     public function update(Request $request, $id)
@@ -78,36 +82,26 @@ class PaymentController extends BaseController
         $payment = Payment::find($id);
 
         if (!$payment) {
-            return $this->sendError('Payment not found');
+            return $this->sendError('Payment not found', [], 404);
         }
 
         $validator = Validator::make($request->all(), [
             'status' => 'sometimes|in:pending,completed,failed,refunded',
-            'transaction_id' => 'nullable|string|unique:payments,transaction_id,' . $id . ',payment_id',
         ]);
 
         if ($validator->fails()) {
             return $this->sendError('Validation Error', $validator->errors(), 422);
         }
 
-        $payment->update($request->only(['status', 'transaction_id']));
-
-        return $this->sendResponse(
-            new PaymentResource($payment),
-            'Payment updated successfully'
-        );
+        $payment->update($request->only(['status']));
+        return $this->sendResponse(new PaymentResource($payment), 'Payment updated successfully');
     }
 
     public function destroy($id)
     {
         $payment = Payment::find($id);
-
-        if (!$payment) {
-            return $this->sendError('Payment not found');
-        }
-
+        if (!$payment) return $this->sendError('Payment not found', [], 404);
         $payment->delete();
-
         return $this->sendResponse(null, 'Payment deleted successfully');
     }
 }

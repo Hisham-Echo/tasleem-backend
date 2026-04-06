@@ -1,6 +1,4 @@
 <?php
-// app/Http/Controllers/Api/ReviewController.php
-
 namespace App\Http\Controllers\Api;
 
 use App\Models\Review;
@@ -22,10 +20,6 @@ class ReviewController extends BaseController
             $query->where('user_id', $request->user_id);
         }
 
-        if ($request->has('rating')) {
-            $query->where('rating', $request->rating);
-        }
-
         $reviews = $query->latest()->paginate($request->get('per_page', 15));
 
         return $this->sendPaginated(
@@ -39,29 +33,34 @@ class ReviewController extends BaseController
     {
         $validator = Validator::make($request->all(), [
             'product_id' => 'required|exists:products,id',
-            'user_id' => 'required|exists:users,id',
-            'rating' => 'required|integer|min:1|max:5',
-            'comment' => 'nullable|string',
+            'rating'     => 'required|integer|min:1|max:5',
+            'comment'    => 'nullable|string|max:1000',
         ]);
 
         if ($validator->fails()) {
             return $this->sendError('Validation Error', $validator->errors(), 422);
         }
 
-        // Check if user already reviewed this product
+        $userId = auth()->id();
+
         $existing = Review::where('product_id', $request->product_id)
-            ->where('user_id', $request->user_id)
+            ->where('user_id', $userId)
             ->first();
 
         if ($existing) {
-            return $this->sendError('User already reviewed this product');
+            return $this->sendError('You already reviewed this product');
         }
 
-        $review = Review::create($request->all());
+        $review = Review::create([
+            'product_id' => $request->product_id,
+            'user_id'    => $userId,
+            'rating'     => $request->rating,
+            'comment'    => $request->comment,
+        ]);
 
         return $this->sendResponse(
             new ReviewResource($review->load(['user', 'product'])),
-            'Review created successfully',
+            'Review submitted successfully',
             201
         );
     }
@@ -69,28 +68,21 @@ class ReviewController extends BaseController
     public function show($id)
     {
         $review = Review::with(['user', 'product'])->find($id);
-
-        if (!$review) {
-            return $this->sendError('Review not found');
-        }
-
-        return $this->sendResponse(
-            new ReviewResource($review),
-            'Review retrieved successfully'
-        );
+        if (!$review) return $this->sendError('Review not found', [], 404);
+        return $this->sendResponse(new ReviewResource($review), 'Review retrieved successfully');
     }
 
     public function update(Request $request, $id)
     {
-        $review = Review::find($id);
+        $review = Review::where('user_id', auth()->id())->find($id);
 
         if (!$review) {
-            return $this->sendError('Review not found');
+            return $this->sendError('Review not found or unauthorized', [], 404);
         }
 
         $validator = Validator::make($request->all(), [
-            'rating' => 'sometimes|integer|min:1|max:5',
-            'comment' => 'nullable|string',
+            'rating'  => 'sometimes|integer|min:1|max:5',
+            'comment' => 'nullable|string|max:1000',
         ]);
 
         if ($validator->fails()) {
@@ -98,23 +90,14 @@ class ReviewController extends BaseController
         }
 
         $review->update($request->only(['rating', 'comment']));
-
-        return $this->sendResponse(
-            new ReviewResource($review),
-            'Review updated successfully'
-        );
+        return $this->sendResponse(new ReviewResource($review), 'Review updated successfully');
     }
 
     public function destroy($id)
     {
-        $review = Review::find($id);
-
-        if (!$review) {
-            return $this->sendError('Review not found');
-        }
-
+        $review = Review::where('user_id', auth()->id())->find($id);
+        if (!$review) return $this->sendError('Review not found or unauthorized', [], 404);
         $review->delete();
-
         return $this->sendResponse(null, 'Review deleted successfully');
     }
 }

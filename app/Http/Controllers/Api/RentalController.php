@@ -1,6 +1,4 @@
 <?php
-// app/Http/Controllers/Api/RentalController.php
-
 namespace App\Http\Controllers\Api;
 
 use App\Models\Rental;
@@ -13,9 +11,11 @@ class RentalController extends BaseController
 {
     public function index(Request $request)
     {
-        $query = Rental::with(['product', 'renter']);
+        $query = Rental::with(['product']);
 
-        if ($request->has('renter_id')) {
+        if (!auth()->user()?->isAdmin()) {
+            $query->where('renter_id', auth()->id());
+        } elseif ($request->has('renter_id')) {
             $query->where('renter_id', $request->renter_id);
         }
 
@@ -23,7 +23,7 @@ class RentalController extends BaseController
             $query->where('status', $request->status);
         }
 
-        $rentals = $query->paginate($request->get('per_page', 15));
+        $rentals = $query->latest()->paginate($request->get('per_page', 15));
 
         return $this->sendPaginated(
             $rentals,
@@ -35,47 +35,37 @@ class RentalController extends BaseController
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'product_id' => 'required|exists:products,id',
-            'renter_id' => 'required|exists:users,id',
-            'start_date' => 'required|date|after:today',
-            'end_date' => 'required|date|after:start_date',
-            'daily_price' => 'required|numeric|min:0',
+            'product_id'  => 'required|exists:products,id',
+            'start_date'  => 'required|date',
+            'end_date'    => 'required|date|after:start_date',
+            'daily_price' => 'nullable|numeric|min:0',
         ]);
 
         if ($validator->fails()) {
             return $this->sendError('Validation Error', $validator->errors(), 422);
         }
 
-        // Check product availability
-        $conflictingRental = Rental::where('product_id', $request->product_id)
-            ->where('status', '!=', 'cancelled')
-            ->where(function($query) use ($request) {
-                $query->whereBetween('start_date', [$request->start_date, $request->end_date])
-                      ->orWhereBetween('end_date', [$request->start_date, $request->end_date]);
-            })
-            ->exists();
-
-        if ($conflictingRental) {
-            return $this->sendError('Product not available for selected dates');
-        }
-
         $start = Carbon::parse($request->start_date);
-        $end = Carbon::parse($request->end_date);
-        $days = $start->diffInDays($end) + 1;
+        $end   = Carbon::parse($request->end_date);
+        $days  = max(1, $start->diffInDays($end));
+
+        // Use product's daily price if not provided
+        $product    = \App\Models\Product::find($request->product_id);
+        $dailyPrice = $request->daily_price ?? $product?->daily_rental_price ?? 0;
 
         $rental = Rental::create([
-            'product_id' => $request->product_id,
-            'renter_id' => $request->renter_id,
-            'start_date' => $request->start_date,
-            'end_date' => $request->end_date,
-            'daily_price' => $request->daily_price,
-            'total_days' => $days,
-            'total_price' => $request->daily_price * $days,
-            'status' => 'pending',
+            'product_id'  => $request->product_id,
+            'renter_id'   => auth()->id(),
+            'start_date'  => $request->start_date,
+            'end_date'    => $request->end_date,
+            'daily_price' => $dailyPrice,
+            'total_days'  => $days,
+            'total_price' => $dailyPrice * $days,
+            'status'      => 'pending',
         ]);
 
         return $this->sendResponse(
-            new RentalResource($rental->load(['product', 'renter'])),
+            new RentalResource($rental->load('product')),
             'Rental created successfully',
             201
         );
@@ -83,16 +73,17 @@ class RentalController extends BaseController
 
     public function show($id)
     {
-        $rental = Rental::with(['product', 'renter', 'payment'])->find($id);
+        $rental = Rental::with(['product'])->find($id);
 
         if (!$rental) {
-            return $this->sendError('Rental not found');
+            return $this->sendError('Rental not found', [], 404);
         }
 
-        return $this->sendResponse(
-            new RentalResource($rental),
-            'Rental retrieved successfully'
-        );
+        if (!auth()->user()?->isAdmin() && $rental->renter_id !== auth()->id()) {
+            return $this->sendError('Unauthorized', [], 403);
+        }
+
+        return $this->sendResponse(new RentalResource($rental), 'Rental retrieved successfully');
     }
 
     public function update(Request $request, $id)
@@ -100,11 +91,11 @@ class RentalController extends BaseController
         $rental = Rental::find($id);
 
         if (!$rental) {
-            return $this->sendError('Rental not found');
+            return $this->sendError('Rental not found', [], 404);
         }
 
         $validator = Validator::make($request->all(), [
-            'status' => 'sometimes|in:pending,confirmed,active,completed,cancelled',
+            'status' => 'sometimes|in:pending,confirmed,active,completed,cancelled,returned',
         ]);
 
         if ($validator->fails()) {
@@ -112,27 +103,18 @@ class RentalController extends BaseController
         }
 
         $rental->update($request->only('status'));
-
-        return $this->sendResponse(
-            new RentalResource($rental),
-            'Rental updated successfully'
-        );
+        return $this->sendResponse(new RentalResource($rental), 'Rental updated successfully');
     }
 
     public function destroy($id)
     {
-        $rental = Rental::find($id);
+        $rental = Rental::where('renter_id', auth()->id())->find($id);
 
         if (!$rental) {
-            return $this->sendError('Rental not found');
-        }
-
-        if ($rental->status !== 'pending') {
-            return $this->sendError('Cannot delete rental that is not pending');
+            return $this->sendError('Rental not found', [], 404);
         }
 
         $rental->delete();
-
         return $this->sendResponse(null, 'Rental deleted successfully');
     }
 }
