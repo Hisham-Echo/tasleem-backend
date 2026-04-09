@@ -1,126 +1,156 @@
 <?php
 // app/Http/Controllers/Api/AiRecommendationController.php
+// Proxies requests to the Python AI microservice, enriches with full product data
 
 namespace App\Http\Controllers\Api;
 
-use App\Models\AiRecommendation;
-use App\Http\Resources\AiRecommendationResource;
+use App\Models\Product;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class AiRecommendationController extends BaseController
 {
+    private function aiUrl(string $path): string
+    {
+        $base = rtrim(env('AI_SERVICE_URL', ''), '/');
+        return $base . '/' . ltrim($path, '/');
+    }
+
+    // Fetch product IDs from Python service, return full product objects
+    private function enrichProducts(array $ids, int $limit = 20): array
+    {
+        if (empty($ids)) return [];
+
+        $ids = array_slice($ids, 0, $limit);
+
+        $products = Product::whereIn('id', $ids)
+            ->where('status', '1')
+            ->get()
+            ->keyBy('id');
+
+        // Preserve the AI-ranked order
+        return collect($ids)
+            ->map(fn($id) => $products[$id] ?? null)
+            ->filter()
+            ->values()
+            ->toArray();
+    }
+
+    // GET /api/v1/recommendations?last_product_id=X
+    // Personalized recommendations for the logged-in user
     public function index(Request $request)
     {
-        $query = AiRecommendation::with(['user', 'product']);
+        try {
+            $userId = auth()->id();
+            $params = array_filter([
+                'last_product_id' => $request->last_product_id,
+                'k' => 8,
+            ]);
 
-        if ($request->has('user_id')) {
-            $query->where('user_id', $request->user_id);
+            $res = Http::timeout(10)->get($this->aiUrl("/recommend/user/{$userId}"), $params);
+
+            if ($res->failed()) throw new \Exception("AI service error");
+
+            $data     = $res->json();
+            $products = $this->enrichProducts($data['ids'] ?? []);
+
+            return response()->json([
+                'section'  => $data['section'] ?? 'For You',
+                'products' => $products,
+                'data'     => $products, // frontend compat
+            ]);
+        } catch (\Exception $e) {
+            Log::warning("AI recommendations unavailable: " . $e->getMessage());
+            return response()->json(['section' => 'For You', 'products' => [], 'data' => []]);
         }
-
-        if ($request->has('algorithm_type')) {
-            $query->where('algorithm_type', $request->algorithm_type);
-        }
-
-        // Get only valid recommendations
-        $query->where(function($q) {
-            $q->whereNull('expires_at')
-              ->orWhere('expires_at', '>', now());
-        });
-
-        $recommendations = $query->orderBy('score', 'desc')
-            ->paginate($request->get('per_page', 20));
-
-        return $this->sendPaginated(
-            $recommendations,
-            AiRecommendationResource::collection($recommendations),
-            'Recommendations retrieved successfully'
-        );
     }
 
-    public function store(Request $request)
+    // GET /api/v1/ai/trending
+    public function trending(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'user_id' => 'nullable|exists:users,id',
-            'product_id' => 'required|exists:products,id',
-            'score' => 'required|numeric|min:0|max:1',
-            'algorithm_type' => 'required|in:collaborative,content,hybrid,popularity,location',
-            'reason' => 'nullable|string',
-            'metadata' => 'nullable|array',
-            'expires_at' => 'nullable|date',
-        ]);
-
-        if ($validator->fails()) {
-            return $this->sendError('Validation Error', $validator->errors(), 422);
+        try {
+            $res      = Http::timeout(10)->get($this->aiUrl('/trending'), ['k' => 8]);
+            $data     = $res->json();
+            $products = $this->enrichProducts($data['ids'] ?? []);
+            return response()->json(['section' => $data['section'] ?? 'Trending Now', 'products' => $products]);
+        } catch (\Exception $e) {
+            return response()->json(['section' => 'Trending Now', 'products' => []]);
         }
-
-        $recommendation = AiRecommendation::updateOrCreate(
-            [
-                'user_id' => $request->user_id,
-                'product_id' => $request->product_id,
-                'algorithm_type' => $request->algorithm_type,
-            ],
-            $request->all()
-        );
-
-        return $this->sendResponse(
-            new AiRecommendationResource($recommendation),
-            'Recommendation saved successfully',
-            201
-        );
     }
 
-    public function show($id)
+    // GET /api/v1/ai/explore
+    public function explore(Request $request)
     {
-        $recommendation = AiRecommendation::with(['user', 'product'])->find($id);
-
-        if (!$recommendation) {
-            return $this->sendError('Recommendation not found');
+        try {
+            $res      = Http::timeout(10)->get($this->aiUrl('/explore'), ['k' => 8]);
+            $data     = $res->json();
+            $products = $this->enrichProducts($data['ids'] ?? []);
+            return response()->json(['section' => $data['section'] ?? 'Explore More', 'products' => $products]);
+        } catch (\Exception $e) {
+            // Fallback: random products from DB
+            $products = Product::where('status', '1')->inRandomOrder()->limit(8)->get();
+            return response()->json(['section' => 'Explore More', 'products' => $products]);
         }
-
-        return $this->sendResponse(
-            new AiRecommendationResource($recommendation),
-            'Recommendation retrieved successfully'
-        );
     }
 
-    public function update(Request $request, $id)
+    // GET /api/v1/ai/similar/{productId}
+    public function similar(Request $request, int $productId)
     {
-        $recommendation = AiRecommendation::find($id);
-
-        if (!$recommendation) {
-            return $this->sendError('Recommendation not found');
+        try {
+            $res      = Http::timeout(10)->get($this->aiUrl("/similar/{$productId}"), ['k' => 6]);
+            $data     = $res->json();
+            $products = $this->enrichProducts($data['ids'] ?? []);
+            return response()->json(['products' => $products]);
+        } catch (\Exception $e) {
+            // Fallback: same category products
+            $product  = Product::find($productId);
+            $products = $product
+                ? Product::where('category_id', $product->category_id)->where('id', '!=', $productId)->where('status', '1')->limit(6)->get()
+                : collect([]);
+            return response()->json(['products' => $products]);
         }
-
-        $validator = Validator::make($request->all(), [
-            'score' => 'sometimes|numeric|min:0|max:1',
-            'reason' => 'nullable|string',
-            'metadata' => 'nullable|array',
-            'expires_at' => 'nullable|date',
-        ]);
-
-        if ($validator->fails()) {
-            return $this->sendError('Validation Error', $validator->errors(), 422);
-        }
-
-        $recommendation->update($request->all());
-
-        return $this->sendResponse(
-            new AiRecommendationResource($recommendation),
-            'Recommendation updated successfully'
-        );
     }
 
-    public function destroy($id)
+    // GET /api/v1/ai/search?q=laptop
+    public function search(Request $request)
     {
-        $recommendation = AiRecommendation::find($id);
+        $request->validate(['q' => 'required|string|min:2']);
 
-        if (!$recommendation) {
-            return $this->sendError('Recommendation not found');
+        try {
+            $res      = Http::timeout(10)->get($this->aiUrl('/search'), ['q' => $request->q, 'k' => 10]);
+            $data     = $res->json();
+            $products = $this->enrichProducts($data['ids'] ?? []);
+            return response()->json(['products' => $products, 'query' => $request->q]);
+        } catch (\Exception $e) {
+            return response()->json(['products' => [], 'query' => $request->q]);
         }
-
-        $recommendation->delete();
-
-        return $this->sendResponse(null, 'Recommendation deleted successfully');
     }
+
+    // GET /api/v1/ai/assistant?query=I need a camera for a wedding
+    public function assistant(Request $request)
+    {
+        $request->validate(['query' => 'required|string|min:3|max:500']);
+
+        try {
+            $res      = Http::timeout(20)->get($this->aiUrl('/assistant'), ['query' => $request->query]);
+            $data     = $res->json();
+            $products = $this->enrichProducts($data['ids'] ?? [], 5);
+            return response()->json([
+                'answer'   => $data['answer'] ?? '',
+                'products' => $products,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'answer'   => 'AI assistant is temporarily unavailable.',
+                'products' => [],
+            ]);
+        }
+    }
+
+    // Keep these stubs so existing apiResource routes don't 404
+    public function store(Request $request)  { return $this->index($request); }
+    public function show($id)                { return response()->json([]); }
+    public function update(Request $request, $id) { return response()->json([]); }
+    public function destroy($id)             { return response()->json([]); }
 }

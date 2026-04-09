@@ -1,6 +1,4 @@
 <?php
-// routes/api.php
-
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\EmailAuthController;
@@ -17,47 +15,33 @@ use App\Http\Controllers\Api\LogController;
 use App\Http\Controllers\Api\WishlistController;
 use App\Http\Controllers\Api\ProductImageController;
 
-// ── Public routes ─────────────────────────────────────────────────────
+// ── Public ─────────────────────────────────────────────────────────
 Route::prefix('v1')->group(function () {
-
-    // Auth
     Route::post('register', [AuthController::class, 'register']);
     Route::post('login',    [AuthController::class, 'login']);
-
-    // Password reset (public — user not logged in)
     Route::post('forgot-password', [EmailAuthController::class, 'forgotPassword']);
     Route::post('reset-password',  [EmailAuthController::class, 'resetPassword']);
+    Route::get('verify-email/{id}/{hash}', [EmailAuthController::class, 'verifyEmail'])->name('verification.verify');
 
-    // Email verification link (user clicks from email, no token needed)
-    Route::get('verify-email/{id}/{hash}', [EmailAuthController::class, 'verifyEmail'])
-         ->name('verification.verify');
-
-    // Products (read-only)
     Route::get('products',              [ProductController::class, 'index']);
     Route::get('products/{id}',         [ProductController::class, 'show']);
     Route::get('products/{id}/similar', [ProductController::class, 'similar']);
-
-    // Categories (read-only)
     Route::get('categories',      [CategoryController::class, 'index']);
     Route::get('categories/{id}', [CategoryController::class, 'show']);
-
-    // Reviews (read-only)
     Route::get('reviews',      [ReviewController::class, 'index']);
     Route::get('reviews/{id}', [ReviewController::class, 'show']);
-
-    // Product images (read-only)
     Route::get('products/{productId}/images', [ProductImageController::class, 'index']);
     Route::get('product-images/{id}',         [ProductImageController::class, 'show']);
+
+    // Public AI endpoints (trending & explore — no auth needed)
+    Route::get('ai/trending', [AiRecommendationController::class, 'trending']);
+    Route::get('ai/explore',  [AiRecommendationController::class, 'explore']);
 });
 
-// ── Protected routes ──────────────────────────────────────────────────
+// ── Protected ───────────────────────────────────────────────────────
 Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
-
-    // Auth
     Route::post('logout', [AuthController::class, 'logout']);
     Route::get('me',      [AuthController::class, 'me']);
-
-    // Resend verification email
     Route::post('email/verification-notification', [EmailAuthController::class, 'resendVerification']);
 
     // Users
@@ -66,37 +50,30 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('users/{id}/orders',   [UserController::class, 'orders']);
     Route::get('users/{id}/rentals',  [UserController::class, 'rentals']);
 
-    // Products (write)
-    Route::apiResource('products', ProductController::class)->except(['index', 'show']);
-
-    // Categories (write)
-    Route::apiResource('categories', CategoryController::class)->except(['index', 'show']);
-
-    // Orders
-    Route::apiResource('orders', OrderController::class);
-
-    // Rentals
-    Route::apiResource('rentals', RentalController::class);
-
-    // Reviews (write)
-    Route::apiResource('reviews', ReviewController::class)->except(['index', 'show']);
-
-    // Payments
+    // Products / Categories / Orders / Rentals / Reviews / Payments
+    Route::apiResource('products',   ProductController::class)->except(['index','show']);
+    Route::apiResource('categories', CategoryController::class)->except(['index','show']);
+    Route::apiResource('orders',   OrderController::class);
+    Route::apiResource('rentals',  RentalController::class);
+    Route::apiResource('reviews',  ReviewController::class)->except(['index','show']);
     Route::apiResource('payments', PaymentController::class);
 
-    // Cart — clear must come before apiResource
+    // Cart
     Route::delete('cart/clear/{user_id}', [CartItemController::class, 'clear']);
     Route::apiResource('cart', CartItemController::class);
 
-    // Wishlist — specific routes before /{id}
+    // Wishlist
     Route::get('wishlist',                   [WishlistController::class, 'index']);
     Route::post('wishlist',                  [WishlistController::class, 'store']);
     Route::get('wishlist/check',             [WishlistController::class, 'check']);
     Route::delete('wishlist/clear/{userId}', [WishlistController::class, 'clear']);
     Route::delete('wishlist/{id}',           [WishlistController::class, 'destroy']);
 
-    // AI Recommendations
-    Route::apiResource('recommendations', AiRecommendationController::class);
+    // AI — personalized & interactive (auth required)
+    Route::get('recommendations',       [AiRecommendationController::class, 'index']);
+    Route::get('ai/similar/{productId}',[AiRecommendationController::class, 'similar']);
+    Route::get('ai/search',             [AiRecommendationController::class, 'search']);
+    Route::get('ai/assistant',          [AiRecommendationController::class, 'assistant']);
 
     // Logs (admin only)
     Route::middleware('admin')->prefix('logs')->group(function () {
@@ -107,7 +84,7 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
         Route::get('/{id}',                           [LogController::class, 'show']);
     });
 
-    // Product images (write) — delete-multiple before /{id}
+    // Product images
     Route::post('product-images/upload',            [ProductImageController::class, 'store']);
     Route::post('product-images/upload-single',     [ProductImageController::class, 'uploadSingle']);
     Route::delete('product-images/delete-multiple', [ProductImageController::class, 'destroyMultiple']);
