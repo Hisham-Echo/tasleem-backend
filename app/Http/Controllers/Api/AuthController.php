@@ -38,6 +38,8 @@ class AuthController extends Controller
             'status'   => 'active',
         ]);
 
+        $user->sendEmailVerificationNotification();
+
         // Return user + token at top level — matches frontend auth store
         return response()->json([
             'user'  => $user,
